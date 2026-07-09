@@ -1,99 +1,114 @@
 # セキュリティ・脆弱性とライセンスの整理
 
 対象: document-diff-report v0.1.0(PDF / docx / pptx / xlsx / xlsm / csv 対応版)
-実施日: 2026-07-09
-監査手段: `cargo audit` v0.22.1(RustSec advisory-db、1,159件のアドバイザリ)、`cargo metadata` によるライセンス棚卸し
+実施日: 2026-07-10
 
----
+監査コマンド:
+
+```sh
+cargo audit
+cargo metadata --format-version 1 --no-deps
+```
+
+`cargo audit` は cargo-audit 0.22.2 で実行し、RustSec advisory-db 1,159件のアドバイザリに照合しました。
 
 ## 1. 脆弱性監査の結果
 
-### 解消済み
+現在の `Cargo.lock` では、`cargo audit` による RustSec 脆弱性報告はありません。
 
-| ID | クレート | 内容 | 対処 |
-|---|---|---|---|
-| RUSTSEC-2026-0009 | time 0.3.36(zip経由) | スタック枯渇によるDoS(Medium 6.8) | `zip` を `default-features = false, features = ["deflate"]` に変更し、time・bzip2・zstd・AES暗号のネイティブ依存ごと排除(OOXMLの読み取りにはdeflateのみで十分) |
+過去に問題になり得た XML / ZIP 周辺の依存は、現在は以下のように更新済みです。
 
-### 残存(要対応)
+- `quick-xml 0.41`
+- `calamine 0.36`
+- `zip 6.0`
 
-| ID | クレート | 深刻度 | 内容 |
-|---|---|---|---|
-| RUSTSEC-2026-0194 | quick-xml 0.31.0 | High 7.5 | 属性名の重複チェックが二次時間になり、細工されたXMLでCPUを占有できる(DoS) |
-| RUSTSEC-2026-0195 | quick-xml 0.31.0 | High 7.5 | `NsReader` の名前空間宣言の割当が無制限で、メモリ枯渇DoSが可能 |
+`zip` は `default-features = false` とし、Office Open XML の読み取りに必要な `deflate` のみを有効化しています。これにより、不要な圧縮形式や暗号関連の依存を避けています。
 
-- **経路**: 本ツール自身のdocx/pptx解析、および `calamine`(xlsx読み取り)の内部利用。
-- **影響の性質**: いずれも「細工されたファイルを開くとハング/クラッシュする」DoSであり、
-  任意コード実行や情報漏えいではない。ローカルCLIとして自分の入手したファイルを比較する
-  用途では実害は限定的だが、**第三者から受け取ったファイルを自動処理するサーバ用途等では対応必須**。
-- **恒久対応**: quick-xml >= 0.41 へ更新(calamineも最新へ)。ただし新版は新しいRustを要求する
-  (下記「サプライチェーン」参照)。
-- **暫定緩和**: 信頼できない出所のファイルを処理しない/`ulimit -v` 等でメモリ・CPU制限を
-  かけたプロセスで実行する。
+## 2. CSV対応による変化
 
-## 2. 脅威モデル(このツール固有の注意点)
+CSV対応で追加した直接依存は以下です。
 
-主な攻撃面は「**信頼できない入力ファイルの解析**」です。
+| クレート | 用途 | ライセンス |
+|---|---|---|
+| `csv` | CSVパース | MIT OR Unlicense |
+| `encoding_rs` | UTF-8 / UTF-8 BOM / CP932(Shift_JIS) デコード | Apache-2.0 OR MIT |
 
-1. **libpdfium(最大のリスク)** — C++製ネイティブライブラリで、PDF解析はメモリ安全性の
-   バグが歴史的に多い領域(Chromiumで継続的にCVEが出る)。Rust側の安全性保証は及ばない。
-   → 対策: bblanchon/pdfium-binaries の**最新リリースを定期的に取得**する運用にする。
-   バイナリ入手時はリリースページのチェックサム確認を推奨。不特定多数のPDFを処理する場合は
-   コンテナ等で隔離実行する。
-2. **zip爆弾** — docx/pptx/xlsxの実体はzip。現在の実装は展開サイズの上限チェックを
-   していないため、高圧縮の悪意あるファイルでメモリを消費させられる(既知の制限)。
-   → 将来対応: エントリごとの展開サイズ上限(例: 100MB)を入れる。
-3. **XML(XXE等)** — quick-xml は外部実体を解決しないためXXE(外部ファイル読み出し)は
-   構造的に発生しない。上記RUSTSECのDoS 2件が現状の残リスク。
-4. **生成HTMLのXSS** — 抽出テキスト・位置ラベル・ファイル名はすべて `escape()`
-   (`& < > "`)を通して要素内容または二重引用符属性にのみ埋め込んでおり、
-   ファイル内容経由のスクリプト注入は緩和済み。レポートは外部リソースを一切読み込まない
-   単一ファイルで、閲覧時の通信は発生しない。
+セキュリティ面の増分リスクは、PDFやOffice文書の解析に比べると小さいです。
 
-## 3. サプライチェーン上の注意
+- CSVパースはRust製ライブラリで処理します。
+- CSVはファイル全体をメモリに読み込んでから解析するため、非常に大きなCSVではメモリ使用量が増えます。
+- 文字コード判定は「UTF-8として読めなければCP932/Shift_JISとして読む」という単純な方式です。その他のレガシー文字コードは未対応です。
+- CSVセル内容は、他形式から抽出したテキストと同じくHTML出力時にエスケープされます。
 
-- **Cargo.lock が古いバージョンに固定されている**ことが最大の技術的負債。
-  これは開発環境(Ubuntu 24.04のapt版 Rust 1.75)でビルドするための措置で、
-  quick-xml等のセキュリティ修正版は新しいRustを要求するため取り込めていない。
-  → **本番運用では rustup の最新stableを使い、`cargo update` で最新化した上で
-  `cargo audit` をCIに組み込む**ことを強く推奨(固定を外せば残存2件は解消可能)。
-- bindgen / clang-sys 等はビルド時のみ使われ、実行バイナリには含まれない。
+## 3. 脅威モデル
+
+主な攻撃面は「信頼できない入力ファイルの解析」です。
+
+1. **PDF解析**
+
+   PDF抽出は libpdfium に依存します。libpdfium はC++製ネイティブライブラリであり、Rust側のメモリ安全性保証は及びません。
+
+   対策: PDFiumバイナリを定期的に更新し、可能ならチェックサムを確認してください。不特定多数のPDFを処理する場合は、コンテナ等で隔離実行するのが安全です。
+
+2. **ZIPベースのOffice形式**
+
+   docx / pptx / xlsx / xlsm はZIPコンテナです。現在の実装では、ZIPエントリの展開後サイズ上限を明示的には設けていません。
+
+   将来対応: 信頼できないファイルを大量処理する用途では、エントリごとの展開サイズ上限を入れるべきです。
+
+3. **XML解析**
+
+   `quick-xml` は外部実体を解決しないため、典型的なXXEによる外部ファイル読み取りは想定していません。現在のバージョンは `cargo audit` でも指摘なしです。
+
+4. **生成HTML**
+
+   ファイル名、位置ラベル、抽出テキストはHTMLに埋め込む前にエスケープしています。生成HTMLは単一ファイルで、外部リソースは読み込みません。
+
+   ただし、レポートにはナビゲーションとコピー機能のためのJavaScriptを含みます。生成HTMLは入力ファイルから作られるローカル成果物として扱ってください。
 
 ## 4. ライセンスの棚卸し
 
-### Rustクレート(依存115件)
+直接依存はすべてパーミッシブライセンスです。
 
-すべてパーミッシブライセンスで、**GPL/LGPL等のコピーレフトは一切含まれない**。
-
-| ライセンス | 件数 | 備考 |
+| クレート | 用途 | ライセンス |
 |---|---|---|
-| MIT OR Apache-2.0(表記ゆれ含む) | 90 | Rustエコシステム標準のデュアル |
-| MIT | 11 | zip, quick-xml, calamine 等 |
-| BSD-3-Clause | 1 | bindgen(ビルド時のみ) |
-| ISC | 1 | libloading |
-| Unlicense OR MIT | 3 | memchr 等 |
-| その他(0BSD/Zlib/Unicode-3.0等の選択式) | 9 | いずれもパーミッシブ |
+| `anyhow` | エラー処理 | MIT OR Apache-2.0 |
+| `clap` | CLI引数パース | MIT OR Apache-2.0 |
+| `pdfium-render` | PDFium Rustラッパー | MIT OR Apache-2.0 |
+| `similar` | テキストdiff | Apache-2.0 |
+| `zip` | Office ZIPコンテナ読み取り | MIT |
+| `quick-xml` | docx/pptx XML解析 | MIT |
+| `calamine` | xlsx/xlsm読み取り | MIT |
+| `csv` | CSVパース | MIT OR Unlicense |
+| `encoding_rs` | CSV文字コードfallback | Apache-2.0 OR MIT |
 
-### libpdfium バイナリ(実行時に同梱・配布する場合)
+直接依存としてGPL/LGPL等のコピーレフトライセンスは意図的に導入していません。
 
-- ラッパー(bblanchon/pdfium-binaries): MIT
-- PDFium本体: BSD-3-Clause(`licenses/pdfium.txt`)
-- 同梱サードパーティ: FreeType(FTL)、ICU、libjpeg-turbo、libpng、libtiff、
-  OpenJPEG、zlib、abseil 等 — いずれもパーミッシブ。配布物の `licenses/` フォルダを
-  そのまま同梱すれば表示義務を満たせる。
+## 5. libpdfiumを同梱配布する場合
 
-### 配布時の義務(社内利用のみなら実質不要)
+PDF比較に必要な `pdfium.dll` / `libpdfium.so` / `libpdfium.dylib` を配布物に同梱する場合は、Rustクレートとは別にPDFium側のライセンス表示が必要です。
 
-- バイナリを社外配布する場合: MIT/BSD/Apache-2.0 の**著作権表示とライセンス文の同梱**が必要。
-  `cargo about` や `cargo license` でTHIRD-PARTY-NOTICES を自動生成できる。
-  libpdfiumを同梱するなら上記 `licenses/` フォルダも添付する。
-- Apache-2.0 には明示的な特許ライセンス条項があり、利用側に有利。
-- **本プロジェクト自身のライセンスが未設定**。公開・配布の予定があれば、Rust慣習の
-  「MIT OR Apache-2.0」デュアルを `Cargo.toml` の `license` フィールドと
-  LICENSE-MIT / LICENSE-APACHE ファイルで宣言することを推奨。
+- `pdfium-render`: MIT OR Apache-2.0
+- bblanchon/pdfium-binaries のラッパー情報: MIT
+- PDFium本体: BSD-3-Clause
+- PDFium同梱サードパーティ: FreeType、ICU、libjpeg-turbo、libpng、libtiff、OpenJPEG、zlib、abseil 等
 
-## 5. 推奨アクション(優先順)
+PDFiumバイナリを同梱する場合は、PDFium配布物の `licenses/` フォルダまたは同等の第三者ライセンス表示を添付してください。
 
-1. 本番ビルドは最新stable Rustで行い、依存を最新化して `cargo audit` をクリーンにする(残存2件が解消)
-2. `cargo audit` をCIに組み込み、libpdfiumの更新をリリース監視で追う
-3. zip展開サイズの上限チェックを実装する(不特定のファイルを扱うなら必須)
-4. プロジェクトのライセンスを宣言する(配布予定がある場合)
+## 6. 本プロジェクト自身のライセンス
+
+現時点では、このリポジトリ自身のライセンスが未宣言です。
+
+公開・再利用・配布を想定するなら、Rustプロジェクトで一般的な以下の形を推奨します。
+
+- `Cargo.toml` に `license = "MIT OR Apache-2.0"` を追加
+- `LICENSE-MIT` を追加
+- `LICENSE-APACHE` を追加
+
+## 7. 推奨アクション
+
+1. `cargo audit` をCIに組み込む
+2. Rust stable と依存クレートを定期的に更新する
+3. libpdfium のリリースを別途監視し、定期的に更新する
+4. 信頼できないOfficeファイルを大量処理する用途では、ZIP展開サイズ上限を実装する
+5. 配布前にプロジェクト自身のライセンスを宣言する
