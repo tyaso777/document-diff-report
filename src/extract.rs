@@ -13,7 +13,7 @@ use std::path::Path;
 /// 比較の最小単位。ページ番号(1始まり)と本文を持つ。
 #[derive(Debug, Clone)]
 pub struct Block {
-    /// 位置ラベル(PDF: "p.3", pptx: "s.12", xlsx: "シート名!行7" など)
+    /// 位置ラベル(PDF: "p.3", pptx: "s.12", xlsx: "シート名!行7", csv: "csv:7" など)
     pub loc: String,
     pub text: String,
 }

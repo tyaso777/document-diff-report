@@ -1,6 +1,6 @@
 # セキュリティ・脆弱性とライセンスの整理
 
-対象: document-diff-report v0.1.0(PDF / docx / pptx / xlsx / xlsm 対応版)
+対象: document-diff-report v0.1.0(PDF / docx / pptx / xlsx / xlsm / csv 対応版)
 実施日: 2026-07-09
 監査手段: `cargo audit` v0.22.1(RustSec advisory-db、1,159件のアドバイザリ)、`cargo metadata` によるライセンス棚卸し
 

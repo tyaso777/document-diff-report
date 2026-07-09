@@ -234,6 +234,36 @@ fn col_letter(mut c: u32) -> String {
 
 // ---------------------------------------------------------------- 共通
 
+pub fn extract_csv(path: &Path) -> Result<Vec<Block>> {
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_path(path)
+        .with_context(|| format!("CSVを開けませんでした: {}", path.display()))?;
+    let mut blocks = Vec::new();
+
+    for (row_index, record) in reader.records().enumerate() {
+        let record =
+            record.with_context(|| format!("CSVの{}行目を読み込めませんでした", row_index + 1))?;
+        let mut parts = Vec::new();
+        for (col_index, field) in record.iter().enumerate() {
+            let shown = field.trim();
+            if shown.is_empty() {
+                continue;
+            }
+            parts.push(format!("{}: {}", col_letter(col_index as u32), shown));
+        }
+        if !parts.is_empty() {
+            blocks.push(Block {
+                loc: format!("csv:{}", row_index + 1),
+                text: parts.join(" ┃ "),
+            });
+        }
+    }
+
+    Ok(blocks)
+}
+
 fn read_zip_entry(path: &Path, entry: &str) -> Result<String> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("開けませんでした: {}", path.display()))?;
@@ -257,6 +287,7 @@ pub fn extract_office(path: &Path) -> Result<Vec<Block>> {
         Some("docx") => extract_docx(path),
         Some("pptx") => extract_pptx(path),
         Some("xlsx") | Some("xlsm") => extract_xlsx(path),
+        Some("csv") => extract_csv(path),
         other => bail!("未対応の形式です: {:?}", other),
     }
 }
