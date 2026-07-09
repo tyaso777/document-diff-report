@@ -513,6 +513,7 @@ pub fn extract_office(path: &Path) -> Result<Vec<Block>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_csv_path(name: &str) -> std::path::PathBuf {
@@ -547,6 +548,71 @@ mod tests {
         let path = temp_path(name, ext);
         std::fs::write(&path, bytes).unwrap();
         path
+    }
+
+    fn write_zip_bytes(name: &str, ext: &str, entries: &[(&str, &[u8])]) -> std::path::PathBuf {
+        let path = temp_path(name, ext);
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        for (entry_name, bytes) in entries {
+            zip.start_file(entry_name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    fn write_minimal_xlsx(name: &str, ext: &str) -> std::path::PathBuf {
+        let content_types = br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#;
+        let root_rels = br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#;
+        let workbook = br#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Data" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#;
+        let workbook_rels = br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#;
+        let sheet = br#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Name</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Amount</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>Alpha</t></is></c>
+      <c r="B2"><v>100</v></c>
+    </row>
+  </sheetData>
+</worksheet>"#;
+
+        write_zip_bytes(
+            name,
+            ext,
+            &[
+                ("[Content_Types].xml", content_types),
+                ("_rels/.rels", root_rels),
+                ("xl/workbook.xml", workbook),
+                ("xl/_rels/workbook.xml.rels", workbook_rels),
+                ("xl/worksheets/sheet1.xml", sheet),
+            ],
+        )
     }
 
     #[test]
@@ -617,6 +683,96 @@ mod tests {
 
         std::fs::remove_file(txt).ok();
         std::fs::remove_file(htm).ok();
+    }
+
+    #[test]
+    fn extracts_docx_paragraphs() {
+        let document_xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>First paragraph</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+        let path = write_zip_bytes("basic", "docx", &[("word/document.xml", document_xml)]);
+        let blocks = extract_docx(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(texts, vec!["First paragraph", "Second paragraph"]);
+    }
+
+    #[test]
+    fn extracts_pptx_slide_text() {
+        let slide_xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:sp><p:txBody><a:bodyPr/><a:lstStyle/>
+        <a:p><a:r><a:t>Slide title</a:t></a:r></a:p>
+        <a:p><a:r><a:t>Slide body</a:t></a:r></a:p>
+      </p:txBody></p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>"#;
+        let path = write_zip_bytes("basic", "pptx", &[("ppt/slides/slide1.xml", slide_xml)]);
+        let blocks = extract_pptx(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].loc, "s.1");
+        assert_eq!(blocks[0].text, "Slide title Slide body");
+    }
+
+    #[test]
+    fn extracts_xlsx_rows() {
+        let path = write_minimal_xlsx("basic", "xlsx");
+        let blocks = extract_xlsx(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert!(blocks.iter().any(|b| b.loc == "Data"));
+        let row1 = blocks.iter().find(|b| b.loc == "Data!1").unwrap();
+        assert!(row1.text.contains("A: Name"));
+        assert!(row1.text.contains("B: Amount"));
+        let row2 = blocks.iter().find(|b| b.loc == "Data!2").unwrap();
+        assert!(row2.text.contains("A: Alpha"));
+        assert!(row2.text.contains("B: 100"));
+    }
+
+    #[test]
+    fn extracts_xlsm_rows() {
+        let path = write_minimal_xlsx("basic", "xlsm");
+        let blocks = extract_xlsx(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        let row = blocks.iter().find(|b| b.loc == "Data!1").unwrap();
+        assert!(row.text.contains("A: Name"));
+        assert!(row.text.contains("B: Amount"));
+    }
+
+    #[test]
+    fn extracts_utf8_bom_html_without_bom() {
+        let path = write_bytes("utf8-bom", "html", b"\xef\xbb\xbf<h1>Title</h1>");
+        let blocks = extract_html(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "Title");
+        assert!(!blocks[0].text.contains('\u{feff}'));
+    }
+
+    #[test]
+    fn extracts_cp932_html() {
+        let source = "<p>\u{540d}\u{79f0}</p><p>\u{6771}\u{4eac}</p>";
+        let (encoded, _, had_errors) = encoding_rs::SHIFT_JIS.encode(source);
+        assert!(!had_errors);
+        let path = write_bytes("cp932", "html", &encoded);
+        let blocks = extract_html(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(texts, vec!["\u{540d}\u{79f0}", "\u{6771}\u{4eac}"]);
     }
 
     #[test]
