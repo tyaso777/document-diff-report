@@ -235,11 +235,11 @@ fn col_letter(mut c: u32) -> String {
 // ---------------------------------------------------------------- 共通
 
 pub fn extract_csv(path: &Path) -> Result<Vec<Block>> {
+    let csv_text = read_csv_text(path)?;
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
         .flexible(true)
-        .from_path(path)
-        .with_context(|| format!("CSVを開けませんでした: {}", path.display()))?;
+        .from_reader(csv_text.as_bytes());
     let mut blocks = Vec::new();
 
     for (row_index, record) in reader.records().enumerate() {
@@ -262,6 +262,26 @@ pub fn extract_csv(path: &Path) -> Result<Vec<Block>> {
     }
 
     Ok(blocks)
+}
+
+fn read_csv_text(path: &Path) -> Result<String> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("CSVを開けませんでした: {}", path.display()))?;
+    let decoded = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            let bytes = err.into_bytes();
+            let (text, _, had_errors) = encoding_rs::SHIFT_JIS.decode(&bytes);
+            if had_errors {
+                bail!("CSVの文字コードを判別できませんでした: {}", path.display());
+            }
+            text.into_owned()
+        }
+    };
+    Ok(decoded
+        .strip_prefix('\u{feff}')
+        .unwrap_or(&decoded)
+        .to_string())
 }
 
 fn read_zip_entry(path: &Path, entry: &str) -> Result<String> {

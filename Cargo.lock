@@ -320,6 +320,7 @@ dependencies = [
  "calamine",
  "clap",
  "csv",
+ "encoding_rs",
  "pdfium-render",
  "quick-xml",
  "similar",
