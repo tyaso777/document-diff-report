@@ -1,6 +1,6 @@
 # セキュリティ・脆弱性とライセンスの整理
 
-対象: document-diff-report v0.1.0(PDF / docx / pptx / xlsx / xlsm / csv 対応版)
+対象: document-diff-report v0.1.0(PDF / docx / pptx / xlsx / xlsm / csv / txt / html / htm 対応版)
 実施日: 2026-07-10
 
 監査コマンド:
@@ -39,6 +39,8 @@ CSV対応で追加した直接依存は以下です。
 - CSVはファイル全体をメモリに読み込んでから解析するため、非常に大きなCSVではメモリ使用量が増えます。
 - 文字コード判定は「UTF-8として読めなければCP932/Shift_JISとして読む」という単純な方式です。その他のレガシー文字コードは未対応です。
 - CSVセル内容は、他形式から抽出したテキストと同じくHTML出力時にエスケープされます。
+
+txt / html / htm 対応では、新しい直接依存は追加していません。CSVと同じテキスト読み込み処理を使い、文字コードは UTF-8 / UTF-8 BOM付き / CP932(Shift_JIS) に対応します。HTMLはブラウザ互換の完全なHTMLパーサではなく、`script` / `style` / `noscript` を除外し、主要タグを段落境界として本文テキスト化する軽量抽出です。
 
 ## 3. 脅威モデル
 
@@ -80,7 +82,7 @@ CSV対応で追加した直接依存は以下です。
 | `quick-xml` | docx/pptx XML解析 | MIT |
 | `calamine` | xlsx/xlsm読み取り | MIT |
 | `csv` | CSVパース | MIT OR Unlicense |
-| `encoding_rs` | CSV文字コードfallback | Apache-2.0 OR MIT |
+| `encoding_rs` | CSV/txt/html文字コードfallback | Apache-2.0 OR MIT |
 
 直接依存としてGPL/LGPL等のコピーレフトライセンスは意図的に導入していません。
 

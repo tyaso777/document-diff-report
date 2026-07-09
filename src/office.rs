@@ -235,7 +235,7 @@ fn col_letter(mut c: u32) -> String {
 // ---------------------------------------------------------------- 共通
 
 pub fn extract_csv(path: &Path) -> Result<Vec<Block>> {
-    let csv_text = read_csv_text(path)?;
+    let csv_text = read_text_file(path, "CSV")?;
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
         .flexible(true)
@@ -264,16 +264,46 @@ pub fn extract_csv(path: &Path) -> Result<Vec<Block>> {
     Ok(blocks)
 }
 
-fn read_csv_text(path: &Path) -> Result<String> {
+// ---------------------------------------------------------------- txt / html
+
+pub fn extract_txt(path: &Path) -> Result<Vec<Block>> {
+    let text = read_text_file(path, "TXT")?;
+    Ok(lines_to_paragraphs(text.lines())
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| Block {
+            loc: format!("txt:{}", i + 1),
+            text,
+        })
+        .collect())
+}
+
+pub fn extract_html(path: &Path) -> Result<Vec<Block>> {
+    let html = read_text_file(path, "HTML")?;
+    let text = html_to_text(&html);
+    Ok(lines_to_paragraphs(text.lines())
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| Block {
+            loc: format!("html:{}", i + 1),
+            text,
+        })
+        .collect())
+}
+
+fn read_text_file(path: &Path, label: &str) -> Result<String> {
     let bytes = std::fs::read(path)
-        .with_context(|| format!("CSVを開けませんでした: {}", path.display()))?;
+        .with_context(|| format!("{label}を開けませんでした: {}", path.display()))?;
     let decoded = match String::from_utf8(bytes) {
         Ok(text) => text,
         Err(err) => {
             let bytes = err.into_bytes();
             let (text, _, had_errors) = encoding_rs::SHIFT_JIS.decode(&bytes);
             if had_errors {
-                bail!("CSVの文字コードを判別できませんでした: {}", path.display());
+                bail!(
+                    "{label}の文字コードを判別できませんでした: {}",
+                    path.display()
+                );
             }
             text.into_owned()
         }
@@ -282,6 +312,172 @@ fn read_csv_text(path: &Path) -> Result<String> {
         .strip_prefix('\u{feff}')
         .unwrap_or(&decoded)
         .to_string())
+}
+
+fn html_to_text(html: &str) -> String {
+    let mut out = String::new();
+    let mut text = String::new();
+    let mut chars = html.chars().peekable();
+    let mut skip_until: Option<String> = None;
+
+    while let Some(ch) = chars.next() {
+        if ch != '<' {
+            if skip_until.is_none() {
+                text.push(ch);
+            }
+            continue;
+        }
+
+        flush_html_text(&mut out, &mut text);
+        let mut tag = String::new();
+        for next in chars.by_ref() {
+            if next == '>' {
+                break;
+            }
+            tag.push(next);
+        }
+
+        let tag_name = html_tag_name(&tag);
+        let closing = tag.trim_start().starts_with('/');
+        if let Some(skip) = &skip_until {
+            if closing && tag_name == *skip {
+                skip_until = None;
+            }
+            continue;
+        }
+
+        if !closing && matches!(tag_name.as_str(), "script" | "style" | "noscript") {
+            skip_until = Some(tag_name);
+            continue;
+        }
+        if is_html_break_tag(&tag_name) {
+            push_html_newline(&mut out);
+        }
+    }
+    flush_html_text(&mut out, &mut text);
+    out
+}
+
+fn flush_html_text(out: &mut String, text: &mut String) {
+    if text.is_empty() {
+        return;
+    }
+    out.push_str(&decode_html_entities(text));
+    text.clear();
+}
+
+fn html_tag_name(tag: &str) -> String {
+    tag.trim_start()
+        .trim_start_matches('/')
+        .split(|c: char| c.is_whitespace() || c == '/' || c == '>')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+fn is_html_break_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "br" | "p"
+            | "div"
+            | "section"
+            | "article"
+            | "header"
+            | "footer"
+            | "main"
+            | "aside"
+            | "nav"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "li"
+            | "ul"
+            | "ol"
+            | "table"
+            | "thead"
+            | "tbody"
+            | "tfoot"
+            | "tr"
+            | "th"
+            | "td"
+    )
+}
+
+fn push_html_newline(out: &mut String) {
+    if out.is_empty() {
+        return;
+    }
+    if out.ends_with("\n\n") {
+        return;
+    }
+    if out.ends_with('\n') {
+        out.push('\n');
+    } else {
+        out.push_str("\n\n");
+    }
+}
+
+fn decode_html_entities(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '&' {
+            out.push(ch);
+            continue;
+        }
+
+        let mut entity = String::new();
+        let mut terminated = false;
+        while let Some(&next) = chars.peek() {
+            chars.next();
+            if next == ';' {
+                terminated = true;
+                break;
+            }
+            if entity.len() > 12 {
+                out.push('&');
+                out.push_str(&entity);
+                out.push(next);
+                entity.clear();
+                break;
+            }
+            entity.push(next);
+        }
+
+        match entity.as_str() {
+            "amp" => out.push('&'),
+            "lt" => out.push('<'),
+            "gt" => out.push('>'),
+            "quot" => out.push('"'),
+            "apos" => out.push('\''),
+            "nbsp" => out.push(' '),
+            _ if entity.starts_with("#x") || entity.starts_with("#X") => {
+                if let Ok(code) = u32::from_str_radix(&entity[2..], 16) {
+                    if let Some(c) = char::from_u32(code) {
+                        out.push(c);
+                    }
+                }
+            }
+            _ if entity.starts_with('#') => {
+                if let Ok(code) = entity[1..].parse::<u32>() {
+                    if let Some(c) = char::from_u32(code) {
+                        out.push(c);
+                    }
+                }
+            }
+            _ => {
+                out.push('&');
+                out.push_str(&entity);
+                if terminated {
+                    out.push(';');
+                }
+            }
+        }
+    }
+    out
 }
 
 fn read_zip_entry(path: &Path, entry: &str) -> Result<String> {
@@ -308,6 +504,8 @@ pub fn extract_office(path: &Path) -> Result<Vec<Block>> {
         Some("pptx") => extract_pptx(path),
         Some("xlsx") | Some("xlsm") => extract_xlsx(path),
         Some("csv") => extract_csv(path),
+        Some("txt") => extract_txt(path),
+        Some("html") | Some("htm") => extract_html(path),
         other => bail!("未対応の形式です: {:?}", other),
     }
 }
@@ -332,6 +530,93 @@ mod tests {
         let path = temp_csv_path(name);
         std::fs::write(&path, bytes).unwrap();
         path
+    }
+
+    fn temp_path(name: &str, ext: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "document-diff-report-{name}-{}-{unique}.{ext}",
+            std::process::id()
+        ))
+    }
+
+    fn write_bytes(name: &str, ext: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = temp_path(name, ext);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn extracts_utf8_txt() {
+        let path = write_bytes(
+            "utf8",
+            "txt",
+            b"First paragraph\r\n\r\nSecond paragraph\r\n",
+        );
+        let blocks = extract_txt(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].loc, "txt:1");
+        assert_eq!(blocks[0].text, "First paragraph");
+        assert_eq!(blocks[1].text, "Second paragraph");
+    }
+
+    #[test]
+    fn extracts_utf8_bom_txt_without_bom() {
+        let path = write_bytes("utf8-bom", "txt", b"\xef\xbb\xbfFirst paragraph\r\n");
+        let blocks = extract_txt(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "First paragraph");
+        assert!(!blocks[0].text.contains('\u{feff}'));
+    }
+
+    #[test]
+    fn extracts_cp932_txt() {
+        let source = "\u{540d}\u{79f0}\r\n\r\n\u{6771}\u{4eac}\r\n";
+        let (encoded, _, had_errors) = encoding_rs::SHIFT_JIS.encode(source);
+        assert!(!had_errors);
+        let path = write_bytes("cp932", "txt", &encoded);
+        let blocks = extract_txt(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, "\u{540d}\u{79f0}");
+        assert_eq!(blocks[1].text, "\u{6771}\u{4eac}");
+    }
+
+    #[test]
+    fn extracts_html_text_blocks() {
+        let html = br#"<!doctype html>
+<html><head><style>.x{color:red}</style><script>ignored()</script></head>
+<body><h1>Title &amp; Plan</h1><p>First&nbsp;paragraph</p><ul><li>A</li><li>B</li></ul></body></html>"#;
+        let path = write_bytes("basic", "html", html);
+        let blocks = extract_html(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
+        assert!(texts.contains(&"Title & Plan"));
+        assert!(texts.contains(&"First paragraph"));
+        assert!(texts.contains(&"A"));
+        assert!(texts.contains(&"B"));
+        assert!(!texts.iter().any(|t| t.contains("ignored")));
+    }
+
+    #[test]
+    fn dispatches_txt_and_html_extensions() {
+        let txt = write_bytes("dispatch", "txt", b"Text");
+        let htm = write_bytes("dispatch", "htm", b"<p>Html</p>");
+
+        assert_eq!(extract_office(&txt).unwrap()[0].loc, "txt:1");
+        assert_eq!(extract_office(&htm).unwrap()[0].loc, "html:1");
+
+        std::fs::remove_file(txt).ok();
+        std::fs::remove_file(htm).ok();
     }
 
     #[test]
