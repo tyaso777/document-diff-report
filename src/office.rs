@@ -311,3 +311,62 @@ pub fn extract_office(path: &Path) -> Result<Vec<Block>> {
         other => bail!("未対応の形式です: {:?}", other),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_csv_path(name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "document-diff-report-{name}-{}-{unique}.csv",
+            std::process::id()
+        ))
+    }
+
+    fn write_csv_bytes(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = temp_csv_path(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn extracts_utf8_csv() {
+        let path = write_csv_bytes("utf8", "名称,金額\r\n東京,100\r\n".as_bytes());
+        let blocks = extract_csv(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].loc, "csv:1");
+        assert_eq!(blocks[0].text, "A: 名称 ┃ B: 金額");
+        assert_eq!(blocks[1].text, "A: 東京 ┃ B: 100");
+    }
+
+    #[test]
+    fn extracts_utf8_bom_csv_without_bom_in_first_cell() {
+        let path = write_csv_bytes("utf8-bom", b"\xef\xbb\xbfname,amount\r\nalpha,100\r\n");
+        let blocks = extract_csv(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, "A: name ┃ B: amount");
+        assert!(!blocks[0].text.contains('\u{feff}'));
+    }
+
+    #[test]
+    fn extracts_cp932_csv() {
+        let (encoded, _, had_errors) = encoding_rs::SHIFT_JIS.encode("名称,金額\r\n東京,100\r\n");
+        assert!(!had_errors);
+        let path = write_csv_bytes("cp932", &encoded);
+        let blocks = extract_csv(&path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, "A: 名称 ┃ B: 金額");
+        assert_eq!(blocks[1].text, "A: 東京 ┃ B: 100");
+    }
+}
