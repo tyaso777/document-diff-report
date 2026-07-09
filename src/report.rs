@@ -138,6 +138,38 @@ main {{ max-width: 1400px; margin: 0 auto; padding: 4px 20px 80px; }}
 }}
 body.only-changes .row.moved {{ display: none; }}
 body.only-changes.show-moved .row.moved {{ display: grid; }}
+.cell .pg {{ cursor: pointer; }}
+.cell .pg:hover {{ background: var(--navy); color: #fff; border-color: var(--navy); }}
+.row.selected .cell:not(.empty) {{ outline: 2px dashed #4a6ea9; outline-offset: -2px; }}
+.row.selected .cell .pg {{ background: #4a6ea9; color: #fff; border-color: #4a6ea9; }}
+#selbar {{
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  display: none; align-items: center; gap: 10px; z-index: 20;
+  background: var(--navy); color: #f2efe8; border-radius: 6px;
+  padding: 8px 16px; box-shadow: 0 4px 16px rgba(0,0,0,.3);
+  font-family: "Hiragino Kaku Gothic ProN", sans-serif; font-size: 13px;
+}}
+#selbar.on {{ display: flex; }}
+#selbar button {{
+  background: transparent; color: inherit; cursor: pointer;
+  border: 1px solid rgba(255,255,255,.45); border-radius: 4px; padding: 3px 12px; font-size: 13px;
+}}
+#selbar button:hover {{ background: rgba(255,255,255,.12); }}
+#selbar button.done {{ background: var(--ins-ink); border-color: var(--ins-ink); }}
+#selbar button.fail {{ background: var(--del-ink); border-color: var(--del-ink); }}
+.copybar {{
+  position: absolute; top: 4px; right: 4px; display: none; gap: 4px; z-index: 5;
+}}
+.cell:hover .copybar, .copybar:hover {{ display: flex; }}
+.copybar button {{
+  font-family: "Hiragino Kaku Gothic ProN", sans-serif;
+  font-size: 10.5px; padding: 1px 8px; cursor: pointer;
+  background: var(--navy); color: #f2efe8;
+  border: none; border-radius: 3px; opacity: .85;
+}}
+.copybar button:hover {{ opacity: 1; }}
+.copybar button.done, .controls button.done {{ background: var(--ins-ink); border-color: var(--ins-ink); }}
+.copybar button.fail, .controls button.fail {{ background: var(--del-ink); border-color: var(--del-ink); color: #fff; }}
 del {{ background: #f6cbc6; color: var(--del-ink); text-decoration: line-through; text-decoration-thickness: 1px; border-radius: 2px; padding: 0 1px; }}
 ins {{ background: #bfe6c7; color: var(--ins-ink); text-decoration: none; border-radius: 2px; padding: 0 1px; }}
 .row.current .cell {{ outline: 2px solid var(--focus); outline-offset: -1px; }}
@@ -171,6 +203,7 @@ footer {{ text-align: center; color: var(--ink-soft); font-size: 12px; padding: 
     <button id="prev" title="前の変更へ (p)">◀ 前へ</button>
     <span id="counter">– / {total_changes}</span>
     <button id="next" title="次の変更へ (n)">次へ ▶</button>
+    <button id="copy-tsv" title="全変更を 種別/旧位置/旧/新位置/新 のTSVでコピー(Excel貼付用)">変更一覧をコピー</button>
   </div>
 </header>
 <div class="colheads">
@@ -180,7 +213,9 @@ footer {{ text-align: center; color: var(--ink-soft); font-size: 12px; padding: 
 <main>
 {body}
 </main>
-<footer>document-diff-report により生成 / n・p キーで変更箇所を移動できます</footer>
+<footer>document-diff-report により生成 / n・p キーで変更箇所を移動 /
+位置ラベルをクリックで行を選択し、複数行まとめてコピーできます(Excelには5列、メモ帳にはテキストで貼り付き)</footer>
+<div id="selbar"><span id="selcount"></span><button id="selcopy">コピー</button><button id="selclear">解除</button></div>
 <script>
 (function () {{
   var changes = Array.prototype.slice.call(document.querySelectorAll('.row.chg'));
@@ -204,6 +239,189 @@ footer {{ text-align: center; color: var(--ink-soft); font-size: 12px; padding: 
     if (e.key === 'n') go(idx + 1);
     if (e.key === 'p') go(idx - 1);
   }});
+
+  // --- コピー機能 ---
+  function copyText(text, btn) {{
+    function show(label, cls) {{
+      if (!btn.getAttribute('data-label')) btn.setAttribute('data-label', btn.textContent);
+      btn.textContent = label;
+      btn.classList.add(cls);
+      setTimeout(function () {{
+        btn.textContent = btn.getAttribute('data-label');
+        btn.classList.remove('done'); btn.classList.remove('fail');
+      }}, 1600);
+    }}
+    function legacy() {{
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.left = '0'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      var ok = false;
+      try {{ ok = document.execCommand('copy'); }} catch (e) {{ ok = false; }}
+      document.body.removeChild(ta);
+      show(ok ? '✓ コピー済み' : '✗ コピー不可', ok ? 'done' : 'fail');
+    }}
+    try {{
+      if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {{
+        navigator.clipboard.writeText(text).then(
+          function () {{ show('✓ コピー済み', 'done'); }},
+          function () {{ legacy(); }}
+        );
+      }} else {{
+        legacy();
+      }}
+    }} catch (e) {{ legacy(); }}
+  }}
+
+  function cellText(cell) {{
+    if (!cell || cell.classList.contains('empty')) return '';
+    var clone = cell.cloneNode(true);
+    var trims = Array.prototype.slice.call(clone.querySelectorAll('.pg, .copybar'));
+    for (var i = 0; i < trims.length; i++) {{ trims[i].parentNode.removeChild(trims[i]); }}
+    return (clone.textContent || '').trim();
+  }}
+
+  function cellLoc(cell) {{
+    var pg = cell && cell.querySelector('.pg');
+    return pg ? pg.textContent.trim() : '';
+  }}
+
+  var bar = document.createElement('div');
+  bar.className = 'copybar';
+  var bCell = document.createElement('button');
+  bCell.textContent = 'コピー';
+  var bPair = document.createElement('button');
+  bPair.textContent = '旧→新';
+  bar.appendChild(bCell); bar.appendChild(bPair);
+  document.querySelector('main').addEventListener('mouseover', function (e) {{
+    var cell = e.target.closest('.cell');
+    if (!cell || cell.classList.contains('empty')) return;
+    var row = cell.closest('.row');
+    bPair.style.display = (row.classList.contains('changed') || row.classList.contains('moved')) ? '' : 'none';
+    if (bar.parentNode !== cell) cell.appendChild(bar);
+  }});
+  bCell.addEventListener('click', function (e) {{
+    e.stopPropagation();
+    copyText(cellText(bar.closest('.cell')), bCell);
+  }});
+
+  function rowKind(row) {{
+    var kinds = {{ changed: '変更', deleted: '削除', inserted: '追加', moved: '移動', same: '同一' }};
+    for (var k in kinds) {{ if (row.classList.contains(k)) return kinds[k]; }}
+    return '';
+  }}
+
+  function rowData(row) {{
+    var l = row.children[0], r = row.children[1];
+    return {{ kind: rowKind(row), lloc: cellLoc(l), ltext: cellText(l), rloc: cellLoc(r), rtext: cellText(r) }};
+  }}
+
+  function escHtml(t) {{
+    return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }}
+
+  function rowsPlain(datas) {{
+    return datas.map(function (d) {{
+      return '【' + d.kind + '】' + d.lloc + ' → ' + d.rloc + '\n旧: ' + d.ltext + '\n新: ' + d.rtext;
+    }}).join('\n\n');
+  }}
+
+  function rowsHtmlTable(datas) {{
+    var trs = datas.map(function (d) {{
+      return '<tr><td>' + escHtml(d.lloc) + '</td><td>' + escHtml(d.ltext) +
+             '</td><td>' + escHtml(d.rloc) + '</td><td>' + escHtml(d.rtext) + '</td></tr>';
+    }}).join('');
+    return '<table>' + trs + '</table>';
+  }}
+
+  function copyRich(plain, htmlStr, btn) {{
+    function show(label, cls) {{
+      if (!btn.getAttribute('data-label')) btn.setAttribute('data-label', btn.textContent);
+      btn.textContent = label; btn.classList.add(cls);
+      setTimeout(function () {{
+        btn.textContent = btn.getAttribute('data-label');
+        btn.classList.remove('done'); btn.classList.remove('fail');
+      }}, 1600);
+    }}
+    function legacyRich() {{
+      var handler = function (e) {{
+        e.clipboardData.setData('text/plain', plain);
+        e.clipboardData.setData('text/html', htmlStr);
+        e.preventDefault();
+      }};
+      document.addEventListener('copy', handler);
+      var ta = document.createElement('textarea');
+      ta.value = plain; ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      var ok = false;
+      try {{ ok = document.execCommand('copy'); }} catch (e) {{ ok = false; }}
+      document.removeEventListener('copy', handler);
+      document.body.removeChild(ta);
+      show(ok ? '✓ コピー済み' : '✗ コピー不可', ok ? 'done' : 'fail');
+    }}
+    try {{
+      if (window.isSecureContext && navigator.clipboard && navigator.clipboard.write && window.ClipboardItem) {{
+        var item = new ClipboardItem({{
+          'text/plain': new Blob([plain], {{ type: 'text/plain' }}),
+          'text/html': new Blob([htmlStr], {{ type: 'text/html' }})
+        }});
+        navigator.clipboard.write([item]).then(
+          function () {{ show('✓ コピー済み', 'done'); }},
+          function () {{ legacyRich(); }}
+        );
+      }} else {{ legacyRich(); }}
+    }} catch (e) {{ legacyRich(); }}
+  }}
+
+  bPair.addEventListener('click', function (e) {{
+    e.stopPropagation();
+    var d = [rowData(bar.closest('.row'))];
+    copyRich(rowsPlain(d), rowsHtmlTable(d), bPair);
+  }});
+
+  var selected = [];
+  var selbar = document.getElementById('selbar');
+  var selcount = document.getElementById('selcount');
+  function updateSelbar() {{
+    selcount.textContent = selected.length + ' 行選択中';
+    selbar.classList.toggle('on', selected.length > 0);
+  }}
+  document.querySelector('main').addEventListener('click', function (e) {{
+    var pg = e.target.closest('.pg');
+    if (!pg) return;
+    var row = pg.closest('.row');
+    var i = selected.indexOf(row);
+    if (i >= 0) {{ selected.splice(i, 1); row.classList.remove('selected'); }}
+    else {{ selected.push(row); row.classList.add('selected'); }}
+    updateSelbar();
+  }});
+  document.getElementById('selcopy').addEventListener('click', function () {{
+    if (!selected.length) return;
+    var ordered = Array.prototype.slice.call(document.querySelectorAll('.row.selected'));
+    var datas = ordered.map(rowData);
+    copyRich(rowsPlain(datas), rowsHtmlTable(datas), this);
+  }});
+  document.getElementById('selclear').addEventListener('click', function () {{
+    for (var i = 0; i < selected.length; i++) selected[i].classList.remove('selected');
+    selected = [];
+    updateSelbar();
+  }});
+  document.getElementById('copy-tsv').addEventListener('click', function () {{
+    var kinds = {{ changed: '変更', deleted: '削除', inserted: '追加', moved: '移動' }};
+    var lines = ['種別\t旧位置\t旧\t新位置\t新'];
+    Array.prototype.slice.call(document.querySelectorAll('.row.chg, .row.moved')).forEach(function (row) {{
+      var kind = Object.keys(kinds).filter(function (k) {{ return row.classList.contains(k); }})[0];
+      var l = row.children[0], r = row.children[1];
+      function tsv(s) {{ return s.replace(/[\t\n]/g, ' '); }}
+      lines.push([kinds[kind] || '', cellLoc(l), tsv(cellText(l)), cellLoc(r), tsv(cellText(r))].join('\t'));
+    }});
+    copyText(lines.join('\n'), this);
+  }});
+
   document.getElementById('only-chg').addEventListener('change', function (e) {{
     document.body.classList.toggle('only-changes', e.target.checked);
     if (idx >= 0) changes[idx].scrollIntoView({{ block: 'center' }});
